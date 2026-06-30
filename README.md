@@ -49,6 +49,14 @@ rejection). Greedy speculation is *exact*, so its output must equal baseline
 greedy token-for-token — a built-in correctness check. We sweep γ on the real
 decoder and report mean speedup with a bootstrap 95% CI over prompts.
 
+**Sampled speculation** (`scripts/05_sampled.py`). A second decoder for
+temperature sampling: accept draft token x with probability min(1, p(x)/q(x));
+on rejection sample the correction from the normalized residual max(0, p−q). This
+makes the output distributed identically to sampling from the target alone, so
+correctness is checked *distributionally* — the speculative first-token
+distribution vs the target's, by total-variation distance, against a
+baseline-vs-baseline noise floor.
+
 ## Results
 
 **Where it pays off.** Predicted speedup for every (draft→target, domain). Above
@@ -97,6 +105,20 @@ baseline greedy on 5/6 prompts at every γ. The single mismatch is one fp16 argm
 tie-flip on MPS (batched-verify vs sequential logits differ at the last bit), not a
 logic error — that it is the *same* prompt at every γ confirms it is numerical.
 
+**Sampled (non-greedy) speculation.** With the probabilistic accept/residual rule,
+the output is distributed like sampling the target directly. Empirically (left
+panel below): speedup is ~1.3× across temperatures T∈[0.2, 1.0] — *roughly
+temperature-insensitive* here. This follows from α = 1 − E[TV(p_draft, p_target)]:
+acceptance is set by how often the two models' modes agree (constant for this pair
+on code), not by how sharp the distributions are. The sampled speedup is a little
+below greedy's 1.5×, partly because this implementation samples on CPU, which adds
+per-token overhead the greedy path avoids. Correctness (right panel): the
+speculative first-token distribution sits at TV=0.06 from the target's — *below*
+the 0.11 baseline-vs-baseline sampling-noise floor, i.e. indistinguishable from
+sampling the target directly.
+
+![sampled](figures/fig4_sampled.png)
+
 ## Conclusions
 
 Speculative decoding's payoff is governed by the product of acceptance (α) and
@@ -113,10 +135,11 @@ cheaply, without running the full decoder.
 
 - One GPU-less device class (Apple MPS); the latency profile, and therefore the
   cost ratios and conclusions, will shift on a datacenter GPU.
-- One model family; greedy decoding only (sampled speculation has a stochastic
-  acceptance rule — a natural extension).
+- One model family (Qwen2.5-Coder); a single draft/target pair for the sampled
+  and γ-sweep experiments. Cross-family drafts are a natural extension.
 - Short generations (≤96 tokens) and small prompt sets; α is averaged over
-  positions, not modeled per-position.
+  positions, not modeled per-position. The sampled decoder samples on CPU, which
+  understates its wall-clock speedup relative to the greedy path.
 
 ## Related work
 - Leviathan, Kalman, Matias, *Fast Inference from Transformers via Speculative
@@ -130,7 +153,8 @@ cheaply, without running the full decoder.
 ```sh
 pip install -r requirements.txt
 python scripts/01_acceptance.py          # latency + alpha (CIs) -> data/measurements.json
-python scripts/04_sweep.py 1.5B 7B       # measured gamma-sweep -> data/sweep.json
+python scripts/04_sweep.py 1.5B 7B       # measured greedy gamma-sweep -> data/sweep.json
+python scripts/05_sampled.py 1.5B 7B     # sampled: correctness + temperature -> data/sampled.json
 python scripts/03_figures.py             # figures
 python scripts/02_verify.py 1.5B 7B 3    # single-config exactness + speedup check
 ```
@@ -145,9 +169,9 @@ llm-speculative-decoding/
 │   ├── models.py      # load the Qwen2.5-Coder ladder (shared tokenizer)
 │   ├── measure.py     # per-token latency + acceptance rate alpha
 │   ├── theory.py      # Leviathan speedup model, optimal-gamma
-│   ├── decode.py      # from-scratch greedy baseline + speculative decoder
+│   ├── decode.py      # from-scratch greedy + sampled baseline/speculative decoders
 │   ├── stats.py       # bootstrap CIs, median/IQR
 │   └── prompts.py     # code / prose prompt sets
-├── scripts/           # 01 measure · 02 verify · 03 figures · 04 sweep
+├── scripts/           # 01 measure · 02 verify · 03 figures · 04 sweep · 05 sampled
 └── figures/
 ```

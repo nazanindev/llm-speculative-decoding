@@ -67,8 +67,31 @@ plt.xticks(x, pairs); plt.ylim(0, 1.0); plt.ylabel("acceptance rate α (95% CI)"
 plt.title("Acceptance is domain-dependent: code >> prose")
 plt.legend(); plt.tight_layout(); plt.savefig("figures/fig3_alpha_domain.png", dpi=150); plt.close()
 
+# ---- fig 4: sampled speculation (correctness + temperature) ----
+SAMP = json.load(open("data/sampled.json")) if os.path.exists("data/sampled.json") else None
+if SAMP:
+    temps = sorted(float(t) for t in SAMP["by_temp"])
+    bt = SAMP["by_temp"]
+    pred = [bt[str(t) if str(t) in bt else t]["predicted"] for t in temps]
+    meas = [bt[str(t) if str(t) in bt else t]["measured"] for t in temps]
+    mci = [bt[str(t) if str(t) in bt else t]["measured_ci"] for t in temps]
+    merr = np.array([[m - lo, hi - m] for m, (lo, hi) in zip(meas, mci)]).T
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(12, 5))
+    axL.plot(temps, pred, marker="o", color="tab:blue", label="predicted (from α, c)")
+    axL.errorbar(temps, meas, yerr=merr, marker="s", capsize=4, color="tab:red",
+                 label="measured wall-clock (95% CI)")
+    axL.axhline(1.0, ls="--", c="gray")
+    axL.set_xlabel("sampling temperature"); axL.set_ylabel("speedup")
+    axL.set_title(f"Sampled speculation speedup vs temperature\n({SAMP['draft']}->{SAMP['target']}, γ={SAMP['gamma']})")
+    axL.legend()
+    axR.bar(["baseline\nvs baseline\n(noise floor)", "baseline\nvs speculative"],
+            [SAMP["tv_noise"], SAMP["tv_test"]], color=["gray", "tab:green"])
+    axR.set_ylabel("total-variation distance of output distribution")
+    axR.set_title("Correctness: sampled spec matches target sampling\n(at or below the noise floor = correct)")
+    plt.tight_layout(); plt.savefig("figures/fig4_sampled.png", dpi=150); plt.close()
+
 print("best config:", best_key, "->", round(M["predicted"][best_key]["speedup"], 2), "x predicted")
 if SWEEP:
     print("measured optimum: gamma", SWEEP["best_gamma"],
           round(SWEEP["by_gamma"][str(SWEEP["best_gamma"])]["speedup"], 2), "x")
-print("wrote fig1_where_it_pays, fig2_gamma_sweep, fig3_alpha_domain")
+print("wrote fig1_where_it_pays, fig2_gamma_sweep, fig3_alpha_domain" + (", fig4_sampled" if SAMP else ""))
