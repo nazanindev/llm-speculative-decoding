@@ -16,7 +16,7 @@ from specdec import measure, theory, prompts, stats
 
 DRAFTS  = ["0.5B", "1.5B"]
 TARGETS = ["3B", "7B"]
-DOMAINS = {"code": prompts.code, "prose": prompts.prose}
+DOMAINS = {"code": prompts.load_code(60), "prose": prompts.load_prose(40)}
 MAX_NEW = 96
 
 def main():

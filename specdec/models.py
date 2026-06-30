@@ -15,13 +15,24 @@ MODELS = {
 }
 
 def device():
-    return "mps" if torch.backends.mps.is_available() else "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+def sync():
+    """Block until queued GPU work is done, so timings are real (CUDA or MPS)."""
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    elif torch.backends.mps.is_available():
+        torch.mps.synchronize()
 
 @functools.lru_cache(maxsize=None)
 def load(tag, dtype=None):
     name = MODELS[tag]
     dev = device()
-    dtype = dtype or (torch.float16 if dev == "mps" else torch.float32)
+    dtype = dtype or (torch.float16 if dev in ("mps", "cuda") else torch.float32)
     tok = AutoTokenizer.from_pretrained(name)
     model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=dtype).to(dev).eval()
     return model, tok

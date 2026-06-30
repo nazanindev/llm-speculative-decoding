@@ -48,7 +48,7 @@ print(f"  TV(baseline, spec)     = {tv_test:.3f}   (should be ~ the floor)")
 
 # ---------- Part B: temperature sweep ----------
 TEMPS = [0.2, 0.5, 0.7, 1.0]
-test_prompts = prompts.code[:6]
+test_prompts = prompts.load_code(60)[:24]
 decode.baseline_sampled(target, "Say hello.", max_new=8)          # warmup
 decode.speculative_sampled(draft, target, "Say hello.", max_new=8, gamma=GAMMA)
 

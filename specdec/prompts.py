@@ -1,5 +1,49 @@
-"""Small prompt sets. `code` is the target domain; `prose` is an off-domain
-contrast for the domain-dependence axis of the characterization."""
+"""Prompt sets.
+
+Real benchmarks (cached to data/ on first use, then offline + reproducible):
+  load_code(n)  -- first n HumanEval problems, framed as a completion instruction.
+  load_prose(n) -- first n Dolly open_qa instructions (no context) as off-domain.
+
+The short hand-written `code` / `prose` lists below are kept as a zero-download
+quickstart for the demo scripts.
+"""
+import os, json
+
+_DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+
+
+def _cache(name, build):
+    os.makedirs(_DATA, exist_ok=True)
+    path = os.path.join(_DATA, name)
+    if os.path.exists(path):
+        return json.load(open(path))
+    items = build()
+    json.dump(items, open(path, "w"), indent=1)
+    return items
+
+
+def load_code(n=40):
+    def build():
+        import datasets
+        d = datasets.load_dataset("openai_humaneval", split="test")
+        return ["Complete this Python function. Return only the function.\n\n" + r["prompt"].strip()
+                for r in d.select(range(min(n, len(d))))]
+    return _cache(f"prompts_code_{n}.json", build)
+
+
+def load_prose(n=40):
+    def build():
+        import datasets
+        d = datasets.load_dataset("databricks/databricks-dolly-15k", split="train")
+        out = []
+        for r in d:
+            if r["category"] == "open_qa" and not r["context"].strip():
+                out.append(r["instruction"].strip())
+            if len(out) >= n:
+                break
+        return out
+    return _cache(f"prompts_prose_{n}.json", build)
+
 
 code = [
     "Write a Python function to merge two sorted lists into one sorted list.",

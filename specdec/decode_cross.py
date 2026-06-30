@@ -21,7 +21,7 @@ target uses the same gap-refed cache as the same-family decoder.
 import time
 import torch
 from transformers import DynamicCache
-from .models import load, chat_ids, device
+from .models import load, chat_ids, device, sync
 
 
 @torch.no_grad()
@@ -51,7 +51,7 @@ def speculative_cross_greedy(draft_tag, target_tag, prompt, max_new=64, gamma=4)
     def gap():
         return seq[tcache.get_seq_length():]
 
-    if dev == "mps": torch.mps.synchronize()
+    sync()
     t0 = time.perf_counter()
     done = False
     while len(seq) - plen < max_new and not done:
@@ -91,7 +91,7 @@ def speculative_cross_greedy(draft_tag, target_tag, prompt, max_new=64, gamma=4)
         seq.extend(new_tokens)
         tcache.crop(min(tcache.get_seq_length(), len(seq) - 1))
 
-    if dev == "mps": torch.mps.synchronize()
+    sync()
     stats["time"] = time.perf_counter() - t0
     stats["tokens"] = seq[plen:]
     stats["accept_rate"] = stats["accepted"] / max(stats["proposed"], 1)

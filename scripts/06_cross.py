@@ -13,7 +13,7 @@ from specdec import decode, decode_cross, prompts, stats
 TARGET = "7B"
 GAMMA = 4
 MAX_NEW = 64
-test_prompts = prompts.code[:6]
+test_prompts = prompts.load_code(60)[:20]
 
 # warmup (also triggers the SmolLM download on first run)
 decode.baseline_greedy(TARGET, "Say hello.", max_new=8)

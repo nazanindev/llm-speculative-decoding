@@ -14,7 +14,7 @@ draft  = sys.argv[1] if len(sys.argv) > 1 else "1.5B"
 target = sys.argv[2] if len(sys.argv) > 2 else "7B"
 GAMMAS = [1, 2, 3, 4, 5, 6]
 MAX_NEW = 96
-test_prompts = prompts.code[:6]
+test_prompts = prompts.load_code(60)[:30]
 
 # warmup
 decode.baseline_greedy(target, "Say hello.", max_new=8)

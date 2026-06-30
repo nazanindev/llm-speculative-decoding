@@ -14,7 +14,7 @@ draft/target stay consistent across rejections without fragile index math.
 import time
 import torch
 from transformers import DynamicCache
-from .models import load, chat_ids, device
+from .models import load, chat_ids, device, sync
 
 
 def _probs(logits_row, temperature):
@@ -32,7 +32,7 @@ def baseline_greedy(target_tag, prompt, max_new=128):
     dev = device()
     ids = chat_ids(tok, prompt).to(dev)
     cache = DynamicCache()
-    if dev == "mps": torch.mps.synchronize()
+    sync()
     t0 = time.perf_counter()
     out = model(input_ids=ids, past_key_values=cache, use_cache=True)
     cache = out.past_key_values
@@ -46,7 +46,7 @@ def baseline_greedy(target_tag, prompt, max_new=128):
         cache = out.past_key_values
         cur = int(out.logits[0, -1].argmax()); fwd += 1
         gen.append(cur)
-    if dev == "mps": torch.mps.synchronize()
+    sync()
     dt = time.perf_counter() - t0
     if gen and gen[-1] == tok.eos_token_id: gen = gen[:-1]
     return {"tokens": gen, "time": dt, "target_fwd": fwd}
@@ -64,7 +64,7 @@ def speculative_greedy(draft_tag, target_tag, prompt, max_new=128, gamma=4):
     dcache, tcache = DynamicCache(), DynamicCache()
 
     stats = {"iters": 0, "draft_fwd": 0, "target_fwd": 0, "accepted": 0, "proposed": 0}
-    if dev == "mps": torch.mps.synchronize()
+    sync()
     t0 = time.perf_counter()
 
     def gap(cache):
@@ -117,7 +117,7 @@ def speculative_greedy(draft_tag, target_tag, prompt, max_new=128, gamma=4):
         tcache.crop(min(tcache.get_seq_length(), keep))
         dcache.crop(min(dcache.get_seq_length(), keep))
 
-    if dev == "mps": torch.mps.synchronize()
+    sync()
     stats["time"] = time.perf_counter() - t0
     gen = seq[plen:]
     stats["tokens"] = gen
@@ -133,7 +133,7 @@ def baseline_sampled(target_tag, prompt, max_new=128, temperature=1.0, seed=0):
     gen_rng = torch.Generator().manual_seed(seed)
     ids = chat_ids(tok, prompt).to(dev)
     cache = DynamicCache()
-    if dev == "mps": torch.mps.synchronize()
+    sync()
     t0 = time.perf_counter()
     out = model(input_ids=ids, past_key_values=cache, use_cache=True)
     cache = out.past_key_values
@@ -146,7 +146,7 @@ def baseline_sampled(target_tag, prompt, max_new=128, temperature=1.0, seed=0):
         cache = out.past_key_values
         cur = _sample(_probs(out.logits[0, -1], temperature), gen_rng); fwd += 1
         gen.append(cur)
-    if dev == "mps": torch.mps.synchronize()
+    sync()
     if gen and gen[-1] == tok.eos_token_id: gen = gen[:-1]
     return {"tokens": gen, "time": time.perf_counter() - t0, "target_fwd": fwd}
 
@@ -168,7 +168,7 @@ def speculative_sampled(draft_tag, target_tag, prompt, max_new=128, gamma=4,
     def gap(cache):
         return seq[cache.get_seq_length():]
 
-    if dev == "mps": torch.mps.synchronize()
+    sync()
     t0 = time.perf_counter()
     done = False
     while len(seq) - plen < max_new and not done:
@@ -228,7 +228,7 @@ def speculative_sampled(draft_tag, target_tag, prompt, max_new=128, gamma=4,
         tcache.crop(min(tcache.get_seq_length(), keep))
         dcache.crop(min(dcache.get_seq_length(), keep))
 
-    if dev == "mps": torch.mps.synchronize()
+    sync()
     stats["time"] = time.perf_counter() - t0
     stats["tokens"] = seq[plen:]
     stats["accept_rate"] = stats["accepted"] / max(stats["proposed"], 1)

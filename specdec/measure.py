@@ -11,7 +11,7 @@
 """
 import time
 import torch
-from .models import load, chat_ids, device
+from .models import load, chat_ids, device, sync
 
 
 @torch.no_grad()
@@ -53,13 +53,11 @@ def token_latency(tag, prompt="Write a Python function to merge two sorted lists
                    pad_token_id=tok.eos_token_id)
     samples = []
     for _ in range(trials):
-        if device() == "mps":
-            torch.mps.synchronize()
+        sync()
         t0 = time.perf_counter()
         out = model.generate(ids, max_new_tokens=max_new, do_sample=False,
                              pad_token_id=tok.eos_token_id)
-        if device() == "mps":
-            torch.mps.synchronize()
+        sync()
         gen = out.shape[1] - ids.shape[1]
         samples.append((time.perf_counter() - t0) / max(gen, 1))
     samples.sort()
