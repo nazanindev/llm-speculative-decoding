@@ -23,7 +23,12 @@ Two findings are practical: (1) per-token latency is **overhead-bound and nearly
 flat** across the small models (0.5B–3B differ <25% despite 6× the parameters), so
 the cost ratio — and the decision to speculate at all — is dominated by the
 *target* size; (2) acceptance is strongly **domain-dependent** (code α≈0.9 vs prose
-α≈0.65), so the same draft/target pair that wins on code is marginal on prose.
+α≈0.65), so the same draft/target pair that wins on code is marginal on prose. We
+also implement **sampled** speculation (distribution-correct: TV to target sampling
+below the noise floor; speedup roughly temperature-independent for this pair) and a
+**cross-tokenizer** draft (a non-Qwen model bridged through text — correct, but
+acceptance collapses to 0.54 and it runs *slower* than no speculation), showing
+that a shared tokenizer is what makes a draft/target pair pay off.
 
 ## Method
 
@@ -119,6 +124,20 @@ sampling the target directly.
 
 ![sampled](figures/fig4_sampled.png)
 
+**Cross-tokenizer speculation (a non-Qwen draft).** When the draft is a different
+family (SmolLM2-360M) its tokenizer shares no vocabulary with the target, so we
+bridge through text: the draft proposes tokens, we decode them to a string and
+re-encode with the target tokenizer, then verify in the target's token space
+(`specdec/decode_cross.py`). Verification is target-side, so the output is *still*
+exactly target-greedy (5/6 prompts, same fp16 tie) — the bridge is correct. But it
+does not pay off: acceptance collapses from 0.77 (same-family 1.5B) to **0.54**,
+and the measured result is **0.80× — a slowdown**. The acceptance drop alone is
+nearly fatal (even an idealized cheap cached draft at α=0.54, γ=4 predicts ~0.86×);
+the bridge overhead (the cross-tokenizer draft keeps no KV cache, and we
+re-encode each round) pushes it the rest of the way below break-even.
+
+![cross-tokenizer](figures/fig5_cross.png)
+
 ## Conclusions
 
 Speculative decoding's payoff is governed by the product of acceptance (α) and
@@ -129,17 +148,23 @@ gain is also domain-specific — high and stable on code, weaker on prose — so
 break-even γ moves with the workload. A two-measurement analytic model predicts the
 measured optimum γ exactly and the wall-clock speedup to within the formula's
 (conservative) overhead assumptions, so the right configuration can be chosen
-cheaply, without running the full decoder.
+cheaply, without running the full decoder. Sampled decoding behaves the same way
+(speedup governed by acceptance, which here is set by mode-agreement not
+temperature), and a cross-family draft is *correct* but loses: a shared
+tokenizer — which keeps acceptance high and lets the draft skip the text bridge —
+is what makes a draft/target pair worth it.
 
 ## Limitations
 
 - One GPU-less device class (Apple MPS); the latency profile, and therefore the
   cost ratios and conclusions, will shift on a datacenter GPU.
-- One model family (Qwen2.5-Coder); a single draft/target pair for the sampled
-  and γ-sweep experiments. Cross-family drafts are a natural extension.
-- Short generations (≤96 tokens) and small prompt sets; α is averaged over
-  positions, not modeled per-position. The sampled decoder samples on CPU, which
-  understates its wall-clock speedup relative to the greedy path.
+- One target family (Qwen2.5-Coder); a single draft/target pair for the sampled
+  and γ-sweep experiments. The cross-family test uses one non-Qwen draft.
+- Short generations (≤96 tokens, ≤64 for cross-family) and small prompt sets; α is
+  averaged over positions, not modeled per-position.
+- Two implementation overheads understate measured speedups: the sampled decoder
+  samples on CPU, and the cross-tokenizer draft keeps no KV cache. Both are noted
+  where they matter and don't affect the (exact / distribution-correct) outputs.
 
 ## Related work
 - Leviathan, Kalman, Matias, *Fast Inference from Transformers via Speculative
@@ -155,6 +180,7 @@ pip install -r requirements.txt
 python scripts/01_acceptance.py          # latency + alpha (CIs) -> data/measurements.json
 python scripts/04_sweep.py 1.5B 7B       # measured greedy gamma-sweep -> data/sweep.json
 python scripts/05_sampled.py 1.5B 7B     # sampled: correctness + temperature -> data/sampled.json
+python scripts/06_cross.py               # cross-tokenizer draft (downloads SmolLM2-360M) -> data/cross.json
 python scripts/03_figures.py             # figures
 python scripts/02_verify.py 1.5B 7B 3    # single-config exactness + speedup check
 ```
@@ -166,12 +192,13 @@ Runs locally on CPU / Apple MPS, no API key.
 ```
 llm-speculative-decoding/
 ├── specdec/
-│   ├── models.py      # load the Qwen2.5-Coder ladder (shared tokenizer)
+│   ├── models.py      # load the Qwen2.5-Coder ladder + a non-Qwen draft
 │   ├── measure.py     # per-token latency + acceptance rate alpha
 │   ├── theory.py      # Leviathan speedup model, optimal-gamma
 │   ├── decode.py      # from-scratch greedy + sampled baseline/speculative decoders
+│   ├── decode_cross.py # cross-tokenizer speculation (decode->re-encode bridge)
 │   ├── stats.py       # bootstrap CIs, median/IQR
 │   └── prompts.py     # code / prose prompt sets
-├── scripts/           # 01 measure · 02 verify · 03 figures · 04 sweep · 05 sampled
+├── scripts/           # 01 measure · 02 verify · 03 figures · 04 sweep · 05 sampled · 06 cross
 └── figures/
 ```

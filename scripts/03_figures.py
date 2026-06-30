@@ -90,8 +90,29 @@ if SAMP:
     axR.set_title("Correctness: sampled spec matches target sampling\n(at or below the noise floor = correct)")
     plt.tight_layout(); plt.savefig("figures/fig4_sampled.png", dpi=150); plt.close()
 
+# ---- fig 5: cross-tokenizer vs same-family ----
+CROSS = json.load(open("data/cross.json")) if os.path.exists("data/cross.json") else None
+if CROSS:
+    labels = list(CROSS["configs"].keys())
+    acc = [CROSS["configs"][k]["accept_rate"] for k in labels]
+    spd = [CROSS["configs"][k]["speedup"] for k in labels]
+    serr = np.array([[CROSS["configs"][k]["speedup"] - CROSS["configs"][k]["speedup_ci"][0],
+                      CROSS["configs"][k]["speedup_ci"][1] - CROSS["configs"][k]["speedup"]]
+                     for k in labels]).T
+    short = [l.split(" ")[0] for l in labels]
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(11, 5))
+    axL.bar(short, acc, color=["tab:red", "tab:green"]); axL.set_ylim(0, 1)
+    axL.set_ylabel("acceptance rate α"); axL.set_title("Acceptance: cross-family collapses")
+    axR.bar(short, spd, yerr=serr, capsize=5, color=["tab:red", "tab:green"])
+    axR.axhline(1.0, ls="--", c="black"); axR.set_ylabel("speedup vs autoregressive")
+    axR.set_title("Speedup: cross-family drops below break-even")
+    plt.tight_layout(); plt.savefig("figures/fig5_cross.png", dpi=150); plt.close()
+
 print("best config:", best_key, "->", round(M["predicted"][best_key]["speedup"], 2), "x predicted")
+if CROSS:
+    print("cross-family:", {k: round(CROSS["configs"][k]["speedup"], 2) for k in CROSS["configs"]})
 if SWEEP:
     print("measured optimum: gamma", SWEEP["best_gamma"],
           round(SWEEP["by_gamma"][str(SWEEP["best_gamma"])]["speedup"], 2), "x")
-print("wrote fig1_where_it_pays, fig2_gamma_sweep, fig3_alpha_domain" + (", fig4_sampled" if SAMP else ""))
+print("wrote fig1_where_it_pays, fig2_gamma_sweep, fig3_alpha_domain"
+      + (", fig4_sampled" if SAMP else "") + (", fig5_cross" if CROSS else ""))

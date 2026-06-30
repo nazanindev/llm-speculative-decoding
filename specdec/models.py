@@ -1,5 +1,7 @@
 """Load the Qwen2.5-Coder ladder once and reuse. Same tokenizer across the
-family, which is what makes them valid draft/target pairs for speculation."""
+family, which is what makes them valid draft/target pairs for speculation.
+`smol-360M` is a different family (different tokenizer) for cross-tokenizer
+speculation (see decode_cross.py)."""
 import functools
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -9,6 +11,7 @@ MODELS = {
     "1.5B": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
     "3B":   "Qwen/Qwen2.5-Coder-3B-Instruct",
     "7B":   "Qwen/Qwen2.5-Coder-7B-Instruct",
+    "smol-360M": "HuggingFaceTB/SmolLM2-360M-Instruct",
 }
 
 def device():
