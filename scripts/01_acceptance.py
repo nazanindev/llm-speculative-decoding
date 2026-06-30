@@ -14,8 +14,11 @@ import os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from specdec import measure, theory, prompts, stats
 
-DRAFTS  = ["0.5B", "1.5B"]
-TARGETS = ["3B", "7B"]
+# scope is env-overridable so a memory-limited GPU can shrink it
+# (e.g. SPECDEC_DRAFTS=0.5B SPECDEC_TARGETS=3B for a 16GB card)
+DRAFTS  = os.environ.get("SPECDEC_DRAFTS", "0.5B,1.5B").split(",")
+TARGETS = os.environ.get("SPECDEC_TARGETS", "3B,7B").split(",")
+ALL_MODELS = os.environ.get("SPECDEC_MODELS", "0.5B,1.5B,3B,7B").split(",")
 DOMAINS = {"code": prompts.load_code(60), "prose": prompts.load_prose(40)}
 MAX_NEW = 96
 
@@ -23,7 +26,7 @@ def main():
     out = {"latency": {}, "latency_samples": {}, "alpha": {}, "alpha_ci": {}, "predicted": {}}
 
     print("== per-token latency (s/token, median of trials) ==")
-    for m in ["0.5B", "1.5B", "3B", "7B"]:
+    for m in ALL_MODELS:
         med, samples = measure.token_latency(m)
         out["latency"][m] = med
         out["latency_samples"][m] = samples

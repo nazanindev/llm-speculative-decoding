@@ -11,7 +11,31 @@
 """
 import time
 import torch
+from transformers import DynamicCache
 from .models import load, chat_ids, device, sync
+
+
+@torch.no_grad()
+def forward_latency(tag, batch=1, chunk=1, ctx=128, trials=10, warmup=3):
+    """Median seconds for one forward pass of `chunk` new tokens for `batch`
+    sequences, given a `ctx`-token KV cache. This is the serving-roofline probe:
+    sweep `batch` and compare chunk=1 (a baseline decode step) to chunk=gamma+1
+    (a speculative verify step) to see when the verify stops being 'free'."""
+    model, _ = load(tag)
+    dev = device()
+    ctx_ids = torch.randint(0, 1000, (batch, ctx), device=dev)
+    new_ids = torch.randint(0, 1000, (batch, chunk), device=dev)
+    samples = []
+    for t in range(trials + warmup):
+        cache = DynamicCache()
+        model(input_ids=ctx_ids, past_key_values=cache, use_cache=True)  # prefill (untimed)
+        sync(); t0 = time.perf_counter()
+        model(input_ids=new_ids, past_key_values=cache, use_cache=True)
+        sync()
+        if t >= warmup:
+            samples.append(time.perf_counter() - t0)
+    samples.sort()
+    return samples[len(samples) // 2]
 
 
 @torch.no_grad()

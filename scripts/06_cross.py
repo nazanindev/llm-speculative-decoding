@@ -10,7 +10,8 @@ import os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from specdec import decode, decode_cross, prompts, stats
 
-TARGET = "7B"
+TARGET = sys.argv[1] if len(sys.argv) > 1 else "7B"
+SAME_DRAFT = sys.argv[2] if len(sys.argv) > 2 else "1.5B"
 GAMMA = 4
 MAX_NEW = 64
 test_prompts = prompts.load_code(60)[:20]
@@ -38,10 +39,10 @@ def run(label, fn):
           f"exact={exact}/{len(test_prompts)}")
 
 print(f"cross-tokenizer vs same-family draft (target {TARGET}, gamma={GAMMA}):")
-run("smol-360M->7B (cross-fam)",
+run(f"smol-360M->{TARGET} (cross-fam)",
     lambda p: decode_cross.speculative_cross_greedy("smol-360M", TARGET, p, max_new=MAX_NEW, gamma=GAMMA))
-run("1.5B->7B (same-fam)",
-    lambda p: decode.speculative_greedy("1.5B", TARGET, p, max_new=MAX_NEW, gamma=GAMMA))
+run(f"{SAME_DRAFT}->{TARGET} (same-fam)",
+    lambda p: decode.speculative_greedy(SAME_DRAFT, TARGET, p, max_new=MAX_NEW, gamma=GAMMA))
 
 with open("data/cross.json", "w") as f:
     json.dump(out, f, indent=1)
