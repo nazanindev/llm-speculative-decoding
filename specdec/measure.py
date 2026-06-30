@@ -43,20 +43,24 @@ def alpha_on_sequence(draft_tag, plen, full_ids):
 
 @torch.no_grad()
 def token_latency(tag, prompt="Write a Python function to merge two sorted lists.",
-                  max_new=64, warmup=8):
-    """Median seconds per generated token (greedy, KV cache on)."""
+                  max_new=64, warmup=8, trials=5):
+    """Per-token latency (greedy, KV cache on). Returns the median plus the raw
+    per-trial samples so callers can report spread."""
     model, tok = load(tag)
     ids = chat_ids(tok, prompt).to(device())
     # warmup (kernel compile / cache alloc)
     model.generate(ids, max_new_tokens=warmup, do_sample=False,
                    pad_token_id=tok.eos_token_id)
-    if device() == "mps":
-        torch.mps.synchronize()
-    t0 = time.perf_counter()
-    out = model.generate(ids, max_new_tokens=max_new, do_sample=False,
-                         pad_token_id=tok.eos_token_id)
-    if device() == "mps":
-        torch.mps.synchronize()
-    dt = time.perf_counter() - t0
-    gen = out.shape[1] - ids.shape[1]
-    return dt / max(gen, 1)
+    samples = []
+    for _ in range(trials):
+        if device() == "mps":
+            torch.mps.synchronize()
+        t0 = time.perf_counter()
+        out = model.generate(ids, max_new_tokens=max_new, do_sample=False,
+                             pad_token_id=tok.eos_token_id)
+        if device() == "mps":
+            torch.mps.synchronize()
+        gen = out.shape[1] - ids.shape[1]
+        samples.append((time.perf_counter() - t0) / max(gen, 1))
+    samples.sort()
+    return samples[len(samples) // 2], samples
