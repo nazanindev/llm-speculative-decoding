@@ -108,6 +108,26 @@ if CROSS:
     axR.set_title("Speedup: cross-family drops below break-even")
     plt.tight_layout(); plt.savefig("figures/fig5_cross.png", dpi=150); plt.close()
 
+# ---- fig 6: serving roofline (speedup + verify cost vs batch) ----
+SERV = json.load(open("data/serving.json")) if os.path.exists("data/serving.json") else None
+if SERV:
+    bb = SERV["by_batch"]
+    batches = sorted(int(b) for b in bb)
+    spd = [bb[str(b)]["speedup"] for b in batches]
+    vf = [bb[str(b)]["verify_factor"] for b in batches]
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(12, 5))
+    axL.plot(batches, spd, marker="o", color="tab:purple")
+    axL.axhline(1.0, ls="--", c="gray"); axL.set_xscale("log", base=2)
+    axL.set_xlabel("batch size (concurrent requests)"); axL.set_ylabel("speedup")
+    axL.set_title(f"Speculative speedup decays under serving load\n({SERV['draft']}->{SERV['target']}, γ={SERV['gamma']})")
+    axR.plot(batches, vf, marker="s", color="tab:brown")
+    axR.axhline(1.0, ls="--", c="gray", label="free verify (memory-bound)")
+    axR.axhline(SERV["gamma"] + 1, ls=":", c="red", label=f"full cost (compute-bound, γ+1={SERV['gamma']+1})")
+    axR.set_xscale("log", base=2); axR.set_xlabel("batch size")
+    axR.set_ylabel("verify cost factor  T(B,γ+1)/T(B,1)")
+    axR.set_title("Why: the verify stops being free as batch grows"); axR.legend()
+    plt.tight_layout(); plt.savefig("figures/fig6_serving.png", dpi=150); plt.close()
+
 print("best config:", best_key, "->", round(M["predicted"][best_key]["speedup"], 2), "x predicted")
 if CROSS:
     print("cross-family:", {k: round(CROSS["configs"][k]["speedup"], 2) for k in CROSS["configs"]})
@@ -115,4 +135,5 @@ if SWEEP:
     print("measured optimum: gamma", SWEEP["best_gamma"],
           round(SWEEP["by_gamma"][str(SWEEP["best_gamma"])]["speedup"], 2), "x")
 print("wrote fig1_where_it_pays, fig2_gamma_sweep, fig3_alpha_domain"
-      + (", fig4_sampled" if SAMP else "") + (", fig5_cross" if CROSS else ""))
+      + (", fig4_sampled" if SAMP else "") + (", fig5_cross" if CROSS else "")
+      + (", fig6_serving" if SERV else ""))
