@@ -52,7 +52,9 @@ plt.title("Speedup vs draft length: predicted vs measured")
 plt.legend(); plt.tight_layout(); plt.savefig("figures/fig2_gamma_sweep.png", dpi=150); plt.close()
 
 # ---- fig 3: acceptance rate by config, code vs prose ----
-pairs = ["0.5B->3B", "1.5B->3B", "0.5B->7B", "1.5B->7B"]
+# derive the pairs actually present (varies by platform: MPS has ->7B, a 16GB GPU may not)
+pairs = sorted({k.rsplit("/", 1)[0] for k in M["alpha"] if k.endswith("/code")
+                and f"{k.rsplit('/',1)[0]}/prose" in M["alpha"]})
 code_a = [M["alpha"][f"{p}/code"] for p in pairs]
 prose_a = [M["alpha"][f"{p}/prose"] for p in pairs]
 code_e = np.array([[M["alpha"][f"{p}/code"] - M["alpha_ci"][f"{p}/code"][0],
@@ -118,14 +120,15 @@ if SERV:
     fig, (axL, axR) = plt.subplots(1, 2, figsize=(12, 5))
     axL.plot(batches, spd, marker="o", color="tab:purple")
     axL.axhline(1.0, ls="--", c="gray"); axL.set_xscale("log", base=2)
+    axL.set_ylim(0.6, max(spd) + 0.3)
     axL.set_xlabel("batch size (concurrent requests)"); axL.set_ylabel("speedup")
-    axL.set_title(f"Speculative speedup decays under serving load\n({SERV['draft']}->{SERV['target']}, γ={SERV['gamma']})")
-    axR.plot(batches, vf, marker="s", color="tab:brown")
+    axL.set_title(f"Speedup holds across the reachable batch range\n({SERV['draft']}->{SERV['target']} on a T4, γ={SERV['gamma']}; OOM past batch {batches[-1]})")
+    axR.plot(batches, vf, marker="s", color="tab:brown", label="measured")
     axR.axhline(1.0, ls="--", c="gray", label="free verify (memory-bound)")
-    axR.axhline(SERV["gamma"] + 1, ls=":", c="red", label=f"full cost (compute-bound, γ+1={SERV['gamma']+1})")
-    axR.set_xscale("log", base=2); axR.set_xlabel("batch size")
+    axR.axhline(SERV["gamma"] + 1, ls=":", c="red", label=f"naive 'full cost' (γ+1={SERV['gamma']+1})")
+    axR.set_xscale("log", base=2); axR.set_xlabel("batch size"); axR.set_ylim(0, SERV["gamma"] + 1.4)
     axR.set_ylabel("verify cost factor  T(B,γ+1)/T(B,1)")
-    axR.set_title("Why: the verify stops being free as batch grows"); axR.legend()
+    axR.set_title("Verify stays cheap: nowhere near the naive γ+1 cost"); axR.legend()
     plt.tight_layout(); plt.savefig("figures/fig6_serving.png", dpi=150); plt.close()
 
 print("best config:", best_key, "->", round(M["predicted"][best_key]["speedup"], 2), "x predicted")

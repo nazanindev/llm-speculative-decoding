@@ -1,170 +1,162 @@
-# When does speculative decoding actually pay off?
+# When does speculative decoding pay off — and does it survive serving load?
 
 A from-scratch implementation and empirical characterization of speculative
-decoding on the Qwen2.5-Coder family, run locally on Apple Silicon. Companion to
+decoding on the Qwen2.5-Coder family, run on a real benchmark across two very
+different pieces of hardware (Apple M-series MPS and an NVIDIA T4). Companion to
 [llm-bug-introspection](https://github.com/nazanindev/llm-bug-introspection).
 
 ## Abstract
 
-Speculative decoding speeds up LLM inference by letting a small *draft* model
-propose several tokens that a large *target* model verifies in a single parallel
-forward pass; the target's output is provably unchanged, but it runs in fewer
-sequential steps. Whether it is actually *faster* depends on two competing
-quantities: how often the draft agrees with the target (acceptance rate α) and how
-cheap the draft is relative to the target (cost ratio c). We characterize this
-trade-off on the Qwen2.5-Coder family (0.5B–7B) on an Apple-Silicon (MPS) device.
-We measure α and per-token latency directly (with bootstrap CIs and
-median-of-trials timing), **predict** the speedup and optimal draft length γ from
-the standard speculative-sampling model, then **verify** the prediction with a
-from-scratch greedy speculative decoder. The measured wall-clock speedup tracks
-the prediction in both shape and optimum (best config 1.5B→7B on code: predicted
-optimum γ=3, measured **1.51× [1.46, 1.56]**, output token-identical to baseline).
-Two findings are practical: (1) per-token latency is **overhead-bound and nearly
-flat** across the small models (0.5B–3B differ <25% despite 6× the parameters), so
-the cost ratio — and the decision to speculate at all — is dominated by the
-*target* size; (2) acceptance is strongly **domain-dependent** (code α≈0.9 vs prose
-α≈0.65), so the same draft/target pair that wins on code is marginal on prose. We
-also implement **sampled** speculation (distribution-correct: TV to target sampling
-below the noise floor; speedup roughly temperature-independent for this pair) and a
-**cross-tokenizer** draft (a non-Qwen model bridged through text — correct, but
-acceptance collapses to 0.54 and it runs *slower* than no speculation), showing
-that a shared tokenizer is what makes a draft/target pair pay off.
+Speculative decoding accelerates LLM inference by letting a small *draft* model
+propose tokens a large *target* model verifies in one parallel pass; the target's
+output is provably unchanged, only faster. Whether it is actually faster depends
+on how often the draft agrees with the target (acceptance rate α) and how cheap
+the draft is relative to the target (cost ratio c). We implement it from scratch
+(greedy, sampled, and cross-tokenizer variants, with explicit KV-cache management)
+and characterize it on a real benchmark (HumanEval for code, Dolly for prose),
+using a **predict → verify** method: measure α and latency, predict the speedup
+and optimal draft length γ from the speculative-sampling model, then confirm with
+the real decoder. Findings: (1) greedy speedup is predicted and measured, with an
+optimum at **γ=3**; (2) acceptance is strongly **domain-dependent** (code α≈0.97
+vs prose ≈0.75); (3) sampled speculation is **distribution-correct** (total
+variation to target sampling below the sampling-noise floor); (4) a **cross-family
+draft** (a non-Qwen model bridged through text) is correct but *loses* — a shared
+tokenizer is what makes a pair pay off; (5) on the **serving** axis, contrary to
+the naive roofline, the verify pass stays cheap across the whole batch range we
+could reach, so speculation is robust to batching on this hardware. Two honest
+self-corrections are documented: a "non-monotonic latency" finding that was
+measurement noise, and the serving rolloff hypothesis that the data refuted.
 
 ## Method
 
 **Models.** Qwen2.5-Coder-Instruct at 0.5B / 1.5B / 3B / 7B (shared tokenizer,
-which is what makes them valid draft/target pairs), fp16 on MPS.
+which is what makes them valid draft/target pairs), plus SmolLM2-360M as a
+different-family draft. fp16.
 
-**Two empirical inputs** (`scripts/01_acceptance.py`):
-- *per-token latency* — median over trials with KV cache, per model.
-- *acceptance rate α* — P(draft's greedy next token == target's greedy next
-  token), teacher-forced on the target's own greedy continuation. Accepted tokens
-  are by construction the target's tokens, so this is exactly the α in the speedup
-  model. Measured per domain (code vs prose) with a bootstrap 95% CI over prompts.
+**Platforms.** Apple MPS (full 0.5B–7B ladder) and a free Colab **NVIDIA T4**
+(16GB, so up to the 3B target). Results below are the T4 + real-benchmark run
+unless noted; the MPS numbers appear in the cross-platform comparison.
 
-**Prediction** (`specdec/theory.py`, Leviathan et al. 2023). Per iteration the
-draft proposes γ tokens, the target verifies in one pass; expected emitted tokens
-`E = (1−α^(γ+1))/(1−α)`, cost `(γ·c + 1)` target-forwards, so
+**Benchmark.** HumanEval problems (code, the target domain) and Dolly `open_qa`
+instructions (prose, an off-domain contrast), cached for reproducibility.
+
+**Two empirical inputs** (`scripts/01_acceptance.py`): per-token latency (median
+of trials), and acceptance rate α = P(draft's greedy next token == target's),
+teacher-forced on the target's own continuation — exactly the α in the speedup
+model — with a bootstrap 95% CI over prompts.
+
+**Prediction** (`specdec/theory.py`, Leviathan et al. 2023): expected emitted
+tokens `E = (1−α^(γ+1))/(1−α)`, cost `(γ·c + 1)` target-forwards, so
 `speedup = E / (γ·c + 1)`, maximized over γ.
 
-**Verification** (`specdec/decode.py`, `scripts/04_sweep.py`). A from-scratch
-greedy speculative decoder with explicit KV-cache management (draft and target
-caches track their own covered length; the uncovered "gap" is re-fed after every
-rejection). Greedy speculation is *exact*, so its output must equal baseline
-greedy token-for-token — a built-in correctness check. We sweep γ on the real
-decoder and report mean speedup with a bootstrap 95% CI over prompts.
-
-**Sampled speculation** (`scripts/05_sampled.py`). A second decoder for
-temperature sampling: accept draft token x with probability min(1, p(x)/q(x));
-on rejection sample the correction from the normalized residual max(0, p−q). This
-makes the output distributed identically to sampling from the target alone, so
-correctness is checked *distributionally* — the speculative first-token
-distribution vs the target's, by total-variation distance, against a
-baseline-vs-baseline noise floor.
+**Verification** (`specdec/decode.py`, `decode_cross.py`): from-scratch decoders
+with explicit KV-cache rollback (each cache tracks its own length and re-feeds the
+uncovered "gap" after a rejection). Greedy speculation is *exact* — output equals
+baseline greedy token-for-token, a built-in correctness check. Sampled speculation
+uses the probabilistic accept/residual rule and is checked *distributionally*.
 
 ## Results
 
-**Where it pays off.** Predicted speedup for every (draft→target, domain). Above
-the dashed break-even line is a win; below it, speculation is *slower* than plain
-decoding. Code+7B configs win; prose against the 3B target does not clear
-break-even.
+**Where it pays off.** Predicted speedup for every (draft→target, domain); above
+the dashed line is a win. Against the 3B target every small draft clears
+break-even on code; prose is marginal.
 
 ![where it pays](figures/fig1_where_it_pays.png)
 
-**Latency is overhead-bound at the small end.** Median per-token latency: 0.5B
-17.3 ms, 1.5B 19.0 ms, 3B 21.5 ms, 7B 37.8 ms. The 0.5B→3B range varies <25%
-despite a 6× parameter gap — small models are dominated by fixed per-step
-overhead, not FLOPs. (An earlier single-trial measurement had the 0.5B at 30 ms;
-median-of-trials shows that was noise — a reminder to bootstrap your timings.)
-Consequently the cost ratio c is set mainly by the *target*: any small draft is
-cheap against the 7B (c≈0.5) but not against the 3B (c≈0.8–0.9).
-
-**Acceptance is domain-dependent.** Code α≈0.87–0.92, prose α≈0.63–0.82, with
+**Acceptance is domain-dependent.** Code α≈0.97, prose α≈0.70–0.81, with
 non-overlapping CIs — the draft tracks the target far better on code, which is why
-prose configs slip below break-even.
+prose barely clears break-even.
 
 ![acceptance by domain](figures/fig3_alpha_domain.png)
 
-**Predicted vs measured γ-sweep.** Running the real decoder at each γ on the best
-config (1.5B→7B, code) reproduces the predicted curve: a rise to an optimum at
-**γ=3**, then a plateau. Measured speedup peaks at **1.51× [1.46, 1.56]**.
+**Predicted vs measured γ-sweep** (1.5B→3B, code). The real decoder reproduces the
+predicted curve: an optimum at **γ=3**, then a plateau.
 
 ![gamma sweep](figures/fig2_gamma_sweep.png)
 
 | γ | measured speedup (95% CI) | accepted/iter | exact output |
 |---|---|---|---|
-| 1 | 1.17× [1.04, 1.28] | 0.91 | 5/6 |
-| 2 | 1.33× [1.20, 1.44] | 1.78 | 5/6 |
-| **3** | **1.51× [1.46, 1.56]** | 2.55 | 5/6 |
-| 4 | 1.47× [1.40, 1.52] | 3.23 | 5/6 |
-| 5 | 1.46× [1.39, 1.53] | 3.97 | 5/6 |
-| 6 | 1.46× [1.36, 1.55] | 4.68 | 5/6 |
+| 1 | 1.17× [1.13, 1.21] | 0.99 | 28/30 |
+| 2 | 1.17× [1.13, 1.21] | 1.94 | 30/30 |
+| **3** | **1.20× [1.16, 1.25]** | 2.94 | 30/30 |
+| 4 | 1.18× [1.13, 1.22] | 3.86 | 30/30 |
+| 5 | 1.17× [1.12, 1.22] | 4.72 | 30/30 |
+| 6 | 1.12× [1.07, 1.18] | 5.53 | 30/30 |
 
-The measured curve sits slightly *above* the prediction: the analytic model
-charges the verify pass as one full target-forward, but a batched γ+1-token verify
-is cheaper than that on MPS, so the formula is conservative here. The predicted and
-measured *optima coincide* at γ=3, which is the decision the model exists to make.
+Greedy speculation is exact: output was token-identical to baseline greedy on 28–30
+of 30 prompts (the rare mismatch is an fp16 argmax tie on the target, not a logic
+error). The 3B target's gain (1.20×) is smaller than the 7B's on MPS (≈1.5×) —
+a bigger target has more per-token cost to amortize, so speculation buys more.
 
-**Correctness.** Greedy speculation is exact: output was token-identical to
-baseline greedy on 5/6 prompts at every γ. The single mismatch is one fp16 argmax
-tie-flip on MPS (batched-verify vs sequential logits differ at the last bit), not a
-logic error — that it is the *same* prompt at every γ confirms it is numerical.
-
-**Sampled (non-greedy) speculation.** With the probabilistic accept/residual rule,
-the output is distributed like sampling the target directly. Empirically (left
-panel below): speedup is ~1.3× across temperatures T∈[0.2, 1.0] — *roughly
-temperature-insensitive* here. This follows from α = 1 − E[TV(p_draft, p_target)]:
-acceptance is set by how often the two models' modes agree (constant for this pair
-on code), not by how sharp the distributions are. The sampled speedup is a little
-below greedy's 1.5×, partly because this implementation samples on CPU, which adds
-per-token overhead the greedy path avoids. Correctness (right panel): the
-speculative first-token distribution sits at TV=0.06 from the target's — *below*
-the 0.11 baseline-vs-baseline sampling-noise floor, i.e. indistinguishable from
-sampling the target directly.
+**Sampled (non-greedy) speculation is distribution-correct.** With the
+probabilistic accept/residual rule the output is distributed like sampling the
+target directly: the speculative first-token distribution sits at TV = 0.033 from
+the target's — *below* the 0.067 baseline-vs-baseline noise floor. Speedup is
+roughly flat in temperature (α falls only mildly, 0.98→0.92, as T rises).
 
 ![sampled](figures/fig4_sampled.png)
 
-**Cross-tokenizer speculation (a non-Qwen draft).** When the draft is a different
-family (SmolLM2-360M) its tokenizer shares no vocabulary with the target, so we
-bridge through text: the draft proposes tokens, we decode them to a string and
-re-encode with the target tokenizer, then verify in the target's token space
-(`specdec/decode_cross.py`). Verification is target-side, so the output is *still*
-exactly target-greedy (5/6 prompts, same fp16 tie) — the bridge is correct. But it
-does not pay off: acceptance collapses from 0.77 (same-family 1.5B) to **0.54**,
-and the measured result is **0.80× — a slowdown**. The acceptance drop alone is
-nearly fatal (even an idealized cheap cached draft at α=0.54, γ=4 predicts ~0.86×);
-the bridge overhead (the cross-tokenizer draft keeps no KV cache, and we
-re-encode each round) pushes it the rest of the way below break-even.
+**Cross-tokenizer speculation is correct but loses.** A non-Qwen draft
+(SmolLM2-360M) has no shared vocabulary, so it drafts through a decode→re-encode
+text bridge; verification stays in the target's token space, so output is still
+exactly target-greedy (20/20). But acceptance collapses (0.97 same-family → 0.74
+cross-family) and the net is **0.81× — a slowdown.** A shared tokenizer is what
+makes a draft/target pair worth it.
 
 ![cross-tokenizer](figures/fig5_cross.png)
 
+**Serving: does the speedup survive batching?** Speculative decoding is usually
+measured at batch = 1 (one request, memory-bound, where the verify is nearly
+free). A real server batches requests, which should drive the GPU compute-bound
+and make the verify of γ+1 tokens cost up to γ+1× a decode step. We measured the
+target's forward latency vs batch and chunk to test this. **It did not happen in
+the reachable range:** the verify cost factor stayed near 1 (far below the naive
+γ+1 = 4), and speculation held ~1.1–1.4× all the way to batch 64, where the T4
+runs out of memory.
+
+![serving](figures/fig6_serving.png)
+
+Why the naive rolloff didn't appear: at these batch sizes a forward's cost is
+dominated by weight-loading, attention, and fixed per-batch overhead — adding 3
+verify tokens to the sequence dimension barely moves it, and single-token decode
+is itself GEMV-inefficient, so the baseline isn't cheap either. Both scale
+together, so the ratio stays ≈1. The textbook throughput rolloff is real but lives
+at much larger batch (where wasted draft/verify compute competes with other
+requests for a saturated GPU) — beyond what a 16GB T4 with a 3B model reaches.
+**This refuted our initial hypothesis; we report the measurement, not the guess.**
+
+**Cross-platform.** Per-token latency (median): MPS 0.5B 17 / 1.5B 19 / 3B 22 /
+7B 38 ms; T4 0.5B 33 / 1.5B 39 / 3B 55 ms. The free T4 is an older card — an
+**Apple M-series chip is actually faster per token for these small models at batch
+1**, a memory-bandwidth regime where it competes well. The full ladder (including
+the 7B target, ≈1.5× best speedup) runs on MPS; the T4 is capped at 3B by memory.
+An earlier single-trial latency reading had the 0.5B as the *slowest* model;
+median-of-trials showed that was noise — a reminder to bootstrap your timings.
+
 ## Conclusions
 
-Speculative decoding's payoff is governed by the product of acceptance (α) and
-relative draft cost (c), and both move with hardware and workload. On Apple
-Silicon, latency is overhead-bound for small models, so c is dominated by the
-target size: speculation wins decisively only against the largest (7B) target. The
-gain is also domain-specific — high and stable on code, weaker on prose — so the
-break-even γ moves with the workload. A two-measurement analytic model predicts the
-measured optimum γ exactly and the wall-clock speedup to within the formula's
-(conservative) overhead assumptions, so the right configuration can be chosen
-cheaply, without running the full decoder. Sampled decoding behaves the same way
-(speedup governed by acceptance, which here is set by mode-agreement not
-temperature), and a cross-family draft is *correct* but loses: a shared
-tokenizer — which keeps acceptance high and lets the draft skip the text bridge —
-is what makes a draft/target pair worth it.
+Speculative decoding's payoff is set by acceptance (α) and relative draft cost
+(c), and both move with the model pair, the workload, and the hardware. A
+two-measurement analytic model predicts the optimal γ and the wall-clock speedup;
+acceptance is high and stable on in-domain (code) text and weaker off-domain; the
+technique's exactness (greedy) / distribution-correctness (sampled) makes it safe
+to deploy; and a shared tokenizer is what keeps acceptance high enough to pay. On
+the serving axis, the intuition that batching kills speculative decoding did *not*
+hold on this hardware — the verify stayed cheap and the speedup was robust across
+the batch range we could reach. The honest scope: the production-scale throughput
+regime, where the rolloff is expected, needs a larger GPU than this study used.
 
 ## Limitations
 
-- One GPU-less device class (Apple MPS); the latency profile, and therefore the
-  cost ratios and conclusions, will shift on a datacenter GPU.
-- One target family (Qwen2.5-Coder); a single draft/target pair for the sampled
-  and γ-sweep experiments. The cross-family test uses one non-Qwen draft.
-- Short generations (≤96 tokens, ≤64 for cross-family) and small prompt sets; α is
-  averaged over positions, not modeled per-position.
+- **Serving rolloff not reached.** The T4 (16GB) OOMs past batch 64 with a 3B
+  model, before the compute-bound regime where the throughput rolloff is expected.
+  This is a hardware limit, not evidence the rolloff doesn't exist at scale.
+- Cross-platform comparison mixes an earlier MPS run and the T4 benchmark run;
+  the headline numbers are the consistent T4 + HumanEval/Dolly run.
 - Two implementation overheads understate measured speedups: the sampled decoder
-  samples on CPU, and the cross-tokenizer draft keeps no KV cache. Both are noted
-  where they matter and don't affect the (exact / distribution-correct) outputs.
+  samples on CPU, and the cross-tokenizer draft keeps no KV cache. Neither affects
+  the (exact / distribution-correct) outputs.
+- One target family (Qwen2.5-Coder); short generations; α averaged over positions.
 
 ## Related work
 - Leviathan, Kalman, Matias, *Fast Inference from Transformers via Speculative
@@ -178,27 +170,31 @@ is what makes a draft/target pair worth it.
 ```sh
 pip install -r requirements.txt
 python scripts/01_acceptance.py          # latency + alpha (CIs) -> data/measurements.json
-python scripts/04_sweep.py 1.5B 7B       # measured greedy gamma-sweep -> data/sweep.json
-python scripts/05_sampled.py 1.5B 7B     # sampled: correctness + temperature -> data/sampled.json
-python scripts/06_cross.py               # cross-tokenizer draft (downloads SmolLM2-360M) -> data/cross.json
+python scripts/04_sweep.py 1.5B 3B       # measured greedy gamma-sweep -> data/sweep.json
+python scripts/05_sampled.py 1.5B 3B     # sampled: correctness + temperature -> data/sampled.json
+python scripts/06_cross.py 3B 1.5B       # cross-tokenizer draft (downloads SmolLM2-360M)
+python scripts/07_serving.py 1.5B 3B     # serving roofline (speedup vs batch)
 python scripts/03_figures.py             # figures
-python scripts/02_verify.py 1.5B 7B 3    # single-config exactness + speedup check
+python -m specdec.configure 1.5B 3B code 1   # deploy decision for a config
 ```
 
-Runs locally on CPU / Apple MPS, no API key.
+Runs on CPU / Apple MPS / CUDA (auto-detected). For a real GPU, open
+`gpu_run.ipynb` in Colab (it auto-scopes the target to the GPU's memory).
 
 ## Repository
 
 ```
 llm-speculative-decoding/
 ├── specdec/
-│   ├── models.py      # load the Qwen2.5-Coder ladder + a non-Qwen draft
-│   ├── measure.py     # per-token latency + acceptance rate alpha
-│   ├── theory.py      # Leviathan speedup model, optimal-gamma
-│   ├── decode.py      # from-scratch greedy + sampled baseline/speculative decoders
+│   ├── models.py       # load the ladder + a non-Qwen draft; device/dtype (cuda/mps/cpu)
+│   ├── measure.py      # per-token latency, acceptance alpha, serving forward-latency
+│   ├── theory.py       # Leviathan speedup model, optimal-gamma
+│   ├── decode.py       # from-scratch greedy + sampled baseline/speculative decoders
 │   ├── decode_cross.py # cross-tokenizer speculation (decode->re-encode bridge)
-│   ├── stats.py       # bootstrap CIs, median/IQR
-│   └── prompts.py     # code / prose prompt sets
-├── scripts/           # 01 measure · 02 verify · 03 figures · 04 sweep · 05 sampled · 06 cross
+│   ├── configure.py    # recommend(draft, target, domain, batch) -> deploy decision
+│   ├── stats.py        # bootstrap CIs, median/IQR
+│   └── prompts.py      # HumanEval / Dolly loaders (+ demo lists)
+├── scripts/            # 01 measure · 02 verify · 03 figures · 04 sweep · 05 sampled · 06 cross · 07 serving
+├── gpu_run.ipynb       # one-click Colab GPU run
 └── figures/
 ```
